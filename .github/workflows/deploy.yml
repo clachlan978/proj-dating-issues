@@ -1,0 +1,137 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag"
+        required: false
+        default: "latest"
+      deploy_env:
+        description: "Deploy environment"
+        required: false
+        default: "develop"
+
+concurrency:
+  group: deploy-${{ github.event.inputs.deploy_env }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ${{ secrets.REGISTRY }}
+  NAMESPACE: ${{ secrets.NAMESPACE }}
+  TAG: ${{ github.event.inputs.tag }}
+  DEPLOY_ENV: ${{ github.event.inputs.deploy_env }}
+  DOCKER_BUILD_RECORD_UPLOAD: false
+
+jobs:
+  build-and-push:
+    name: Build and push ${{ matrix.app }}
+    runs-on: ubuntu-latest
+    strategy:
+      # max-parallel: 1
+      matrix:
+        include:
+          - app: dashboard
+            dockerfile: apps/dashboard/Dockerfile
+          - app: studio
+            dockerfile: apps/studio/Dockerfile
+          - app: workspace
+            dockerfile: apps/workspace/Dockerfile
+    steps:
+      - name: Checkout dating repo
+        uses: actions/checkout@v6
+        with:
+          repository: yinheli/proj-dating
+          ssh-key: ${{ secrets.GH_SSH_KEY }}
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Extract metadata for ${{ matrix.app }}
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/proj-dating-${{ matrix.app }}
+          tags: |
+            type=raw,value=${{ env.DEPLOY_ENV }}
+
+      - name: Build and push ${{ matrix.app }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            NODE_ENV=production
+            DEPLOY_ENV=${{ env.DEPLOY_ENV }}
+            NEXT_PUBLIC_GIT_COMMIT=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
+
+  deploy:
+    needs: build-and-push
+    name: Deploy to ${{ github.event.inputs.deploy_env }} server
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout dating repo
+        uses: actions/checkout@v6
+        with:
+          repository: yinheli/proj-dating
+          ssh-key: ${{ secrets.GH_SSH_KEY }}
+          persist-credentials: false
+
+      - name: Deploy to server
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_APP_DIR: ${{ secrets.DEPLOY_APP_DIR }}
+          REGISTRY: ${{ env.REGISTRY }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+          BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+          TAG: ${{ env.TAG }}
+        run: |
+          set -e
+          eval $(ssh-agent -s)
+          echo "$DEPLOY_SSH_KEY" | ssh-add -
+
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p $DEPLOY_APP_DIR"
+
+          tar cz -C docker/develop-server docker-compose.yaml promtail grafana | \
+            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+              "$DEPLOY_USER@$DEPLOY_HOST" "cd $DEPLOY_APP_DIR && tar xz && mkdir -p traefik"
+
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            "$DEPLOY_USER@$DEPLOY_HOST" << REMOTEEOF
+            set -e
+
+            echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY" -u "$REGISTRY_USERNAME" --password-stdin
+
+            cd "$DEPLOY_APP_DIR"
+
+            {
+              echo 'DATABASE_URL=postgresql://dating:dating@localhost:5432/dating'
+              echo 'DATABASE_ADMIN_URL=postgresql://dating:dating@localhost:5432/postgres'
+              echo "BETTER_AUTH_SECRET=$BETTER_AUTH_SECRET"
+              echo 'NODE_ENV=production'
+              echo "DEPLOY_ENV=$DEPLOY_ENV"
+            } > .env
+
+            docker compose pull dashboard studio workspace
+            docker compose up -d
+
+            docker compose run --rm dashboard npx tsx apps/dashboard/src/scripts/hook-deploy.ts
+          REMOTEEOF
