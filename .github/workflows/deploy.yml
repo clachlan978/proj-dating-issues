@@ -110,7 +110,7 @@ jobs:
           ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p $DEPLOY_APP_DIR"
 
-          tar cz -C docker/develop-server docker-compose.yaml promtail grafana backup | \
+          tar cz -C docker/develop-server docker-compose.yaml promtail grafana backup loki | \
             ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
               "$DEPLOY_USER@$DEPLOY_HOST" "cd $DEPLOY_APP_DIR && tar xz && mkdir -p traefik"
 
