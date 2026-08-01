@@ -132,8 +132,10 @@ jobs:
 
             # Back up the database before the stack is touched. Ensures the
             # backup container exists (idempotent), then dumps and prunes to 10.
+            # Note: < /dev/null keeps `docker compose exec` from consuming the
+            # remaining heredoc as stdin, which would silently abort the script.
             docker compose up -d pg-backup
-            docker compose exec -T pg-backup sh /usr/local/bin/db-backup.sh
+            docker compose exec -T pg-backup sh /usr/local/bin/db-backup.sh < /dev/null
 
             docker compose pull dashboard studio workspace
             docker compose up -d
