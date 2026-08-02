@@ -132,6 +132,7 @@ jobs:
 
             # Back up the database before the stack is touched. Ensures the
             # backup container exists (idempotent), then dumps and prunes to 10.
+            # Skips with a warning when postgres is still initializing (first deploy).
             # Note: < /dev/null keeps `docker compose exec` from consuming the
             # remaining heredoc as stdin, which would silently abort the script.
             docker compose up -d pg-backup
