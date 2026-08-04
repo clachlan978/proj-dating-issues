@@ -142,4 +142,10 @@ jobs:
             docker compose up -d
 
             docker compose run --rm dashboard npx tsx apps/dashboard/src/scripts/hook-deploy.ts
+
+            # Free disk after the rollout: remove dangling images (old app
+            # versions replaced by the pull above), stopped containers, unused
+            # networks and build cache. Named volumes are never pruned - they
+            # hold postgres/valkey/loki/grafana data.
+            docker system prune -f
           REMOTEEOF
